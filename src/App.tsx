@@ -20,8 +20,10 @@ type StoredOrder = {
   payment: string;
   status: string;
   coordinates?: Coordinates | null;
+  customer?: string;
 };
 type CheckoutDetails = { method: DeliveryMethod; address: string; phone: string; payment: string; coordinates: Coordinates | null };
+type Meal = { id: number; bn: string; en: string; price: number; cat: string; kitchen: number; status: Status; portions: number; time: string; photo: number; mode: string };
 
 function readStorage<T>(key: string, fallback: T): T {
   if (typeof window === "undefined") return fallback;
@@ -76,7 +78,7 @@ const kitchens = [
   { name: "Adda Bites", student: "Adnan Kabir", hall: "Surja Sen Hall", rating: 4.6, avatar: "AK" },
 ];
 
-const meals = [
+const initialMeals: Meal[] = [
   { id: 1, bn: "ভাত-মুরগি", en: "Rice & Chicken Curry", price: 145, cat: "Lunch", kitchen: 0, status: "open" as Status, portions: 8, time: "12:30 PM", photo: 1, mode: "Delivery · Pickup" },
   { id: 2, bn: "ভুনা খিচুড়ি", en: "Bhuna Khichuri", price: 120, cat: "Lunch", kitchen: 2, status: "open" as Status, portions: 5, time: "1:00 PM", photo: 4, mode: "Delivery · Pickup" },
   { id: 3, bn: "কাচ্চি বিরিয়ানি", en: "Kacchi Biryani", price: 220, cat: "Dinner", kitchen: 1, status: "upcoming" as Status, portions: 12, time: "7:00 PM", photo: 0, mode: "Delivery" },
@@ -147,6 +149,45 @@ function StatusPill({ status }: { status: Status }) {
   return <span className={`status status-${status}`}><i></i>{labels[status]}</span>;
 }
 
+/** Google Maps preview used by both the header location editor and checkout.
+ * It follows the prototype's original no-API-key Maps embed approach. */
+function GoogleMapPreview({ address, coordinates, height = 210 }: {
+  address: string;
+  coordinates: Coordinates | null;
+  height?: number;
+}) {
+  const coordinateQuery = coordinates ? `${coordinates.lat},${coordinates.lon}` : "";
+  const query = coordinateQuery || address.trim();
+  const [previewQuery, setPreviewQuery] = useState(query);
+
+  // Debounce address edits so an iframe isn't reloaded after every keystroke.
+  useEffect(() => {
+    const timer = window.setTimeout(() => setPreviewQuery(query), 450);
+    return () => window.clearTimeout(timer);
+  }, [query]);
+
+  if (!query) {
+    return <div className="map-empty"><Icon name="pin" size={18} /> Enter a delivery address to preview it on Google Maps.</div>;
+  }
+
+  const encodedPreview = encodeURIComponent(previewQuery || query);
+  const encodedOpen = encodeURIComponent(query);
+  return <div className="google-map-preview">
+    <iframe
+      title="Google Maps delivery location preview"
+      loading="lazy"
+      referrerPolicy="no-referrer-when-downgrade"
+      allowFullScreen
+      style={{ height }}
+      src={`https://www.google.com/maps?q=${encodedPreview}&z=16&output=embed`}
+    />
+    <div className="google-map-actions">
+      <span><Icon name="pin" size={14} /> Map preview</span>
+      <a href={`https://www.google.com/maps?q=${encodedOpen}`} target="_blank" rel="noreferrer">Open in Google Maps ↗</a>
+    </div>
+  </div>;
+}
+
 function Header({ lang, setLang, role, setRole, cartCount, openCart, theme, setTheme, user, openAuth, openAccount, address, openLocation, openOrders }: {
   lang: Lang; setLang: (l: Lang) => void; role: Role; setRole: (r: Role) => void; cartCount: number; openCart: () => void;
   theme: Theme; setTheme: (theme: Theme) => void; user: DemoUser | null; openAuth: () => void; openAccount: () => void;
@@ -172,10 +213,10 @@ function Header({ lang, setLang, role, setRole, cartCount, openCart, theme, setT
   </header>;
 }
 
-function FoodCard({ meal, lang, onOpen, onAdd }: { meal: typeof meals[number]; lang: Lang; onOpen: () => void; onAdd: () => void }) {
+function FoodCard({ meal, lang, kitchenAccepting, onOpen, onAdd }: { meal: Meal; lang: Lang; kitchenAccepting: boolean; onOpen: () => void; onAdd: () => void }) {
   const t = copy[lang];
   const kitchen = kitchens[meal.kitchen];
-  const enabled = meal.status === "open" || meal.status === "upcoming";
+  const enabled = kitchenAccepting && (meal.status === "open" || meal.status === "upcoming") && meal.portions > 0;
   return <article className="food-card">
     <button className="food-image" onClick={onOpen}>
       <img src={photos[meal.photo]} alt={meal.en} />
@@ -186,19 +227,18 @@ function FoodCard({ meal, lang, onOpen, onAdd }: { meal: typeof meals[number]; l
       <button className="food-title" onClick={onOpen}><strong>{lang === "bn" ? meal.bn : meal.en}</strong><span>৳{meal.price}</span></button>
       <div className="kitchen-row"><span className="mini-avatar">{kitchen.avatar}</span><div><strong>{kitchen.name}</strong><small>{kitchen.student} · ★ {kitchen.rating}</small></div></div>
       <div className="food-meta"><span><Icon name="clock" size={15} />{t.next}: {meal.time}</span><span>{meal.mode}</span></div>
-      <div className="card-footer"><span>{meal.portions || "No"} {t.portions}</span><Button onClick={onAdd} disabled={!enabled} variant={enabled ? "primary" : "secondary"}><Icon name="plus" size={17} /> {meal.status === "upcoming" ? "Pre-order" : t.add}</Button></div>
+      <div className="card-footer"><span>{meal.portions || "No"} {t.portions}</span><Button onClick={onAdd} disabled={!enabled} variant={enabled ? "primary" : "secondary"}><Icon name="plus" size={17} /> {!kitchenAccepting ? "Kitchen paused" : meal.status === "upcoming" ? "Pre-order" : t.add}</Button></div>
     </div>
   </article>;
 }
 
-function CustomerHome({ lang, addItem, openMeal }: { lang: Lang; addItem: (id: number) => void; openMeal: (id: number) => void }) {
+function CustomerHome({ lang, meals, categories, kitchenAccepting, addItem, openMeal }: { lang: Lang; meals: Meal[]; categories: string[]; kitchenAccepting: boolean; addItem: (id: number) => void; openMeal: (id: number) => void }) {
   const t = copy[lang];
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState("All");
   const [availability, setAvailability] = useState(false);
   const [deliveryMode, setDeliveryMode] = useState("any");
   const [sort, setSort] = useState("recommended");
-  const categories = ["All", "Breakfast", "Lunch", "Dinner", "Vegetarian", "Snacks"];
   const filtered = useMemo(() => meals.filter((meal) => {
     const matchSearch = `${meal.en} ${meal.bn} ${kitchens[meal.kitchen].name}`.toLowerCase().includes(search.toLowerCase().trim());
     const matchCat = category === "All" || meal.cat === category;
@@ -211,7 +251,7 @@ function CustomerHome({ lang, addItem, openMeal }: { lang: Lang; addItem: (id: n
     if (sort === "rating") return kitchens[b.kitchen].rating - kitchens[a.kitchen].rating;
     if (sort === "portions") return b.portions - a.portions;
     return Number(b.status === "open") - Number(a.status === "open") || a.id - b.id;
-  }), [search, category, availability, deliveryMode, sort]);
+  }), [meals, search, category, availability, deliveryMode, sort]);
 
   return <main>
     <section className="hero wrap">
@@ -237,12 +277,13 @@ function CustomerHome({ lang, addItem, openMeal }: { lang: Lang; addItem: (id: n
           <select className="filter-select" value={deliveryMode} onChange={(e) => setDeliveryMode(e.target.value)} aria-label="Filter by fulfilment"><option value="any">Delivery: Any</option><option value="delivery">Delivery</option><option value="pickup">Pickup</option></select>
           <Button onClick={() => document.getElementById("food-results")?.scrollIntoView({ behavior: "smooth", block: "start" })}>Search</Button>
         </div>
+        {!kitchenAccepting && <div className="dashboard-notice customer-pause-notice">The kitchen is paused, so new orders are temporarily unavailable.</div>}
         <div className="section-heading"><div><span className="eyebrow">{t.available}</span><h2>{lang === "bn" ? "আজ কী খেতে চান?" : "What are you craving today?"}</h2></div><button className={`availability-toggle ${availability ? "active" : ""}`} onClick={() => setAvailability(!availability)}><span></span> Open now</button></div>
         <div className="category-row">
           {categories.map((cat) => <button key={cat} className={category === cat ? "active" : ""} onClick={() => setCategory(cat)}>{cat === "All" ? t.all : cat}</button>)}
         </div>
         <div className="result-line" id="food-results"><strong>{filtered.length} {t.results}</strong><label className="sort-control">Sort by <select value={sort} onChange={(e) => setSort(e.target.value)} aria-label="Sort food"><option value="recommended">Recommended</option><option value="rating">Top rated kitchens</option><option value="price-low">Price: low to high</option><option value="price-high">Price: high to low</option><option value="portions">Most portions</option></select></label></div>
-        <div className="food-grid">{filtered.map((meal) => <FoodCard key={meal.id} meal={meal} lang={lang} onOpen={() => openMeal(meal.id)} onAdd={() => addItem(meal.id)} />)}</div>
+        <div className="food-grid">{filtered.map((meal) => <FoodCard key={meal.id} meal={meal} lang={lang} kitchenAccepting={kitchenAccepting} onOpen={() => openMeal(meal.id)} onAdd={() => addItem(meal.id)} />)}</div>
         {filtered.length === 0 && <div className="empty-state"><Icon name="search" size={32} /><strong>No meals found</strong><span>Try a different search or category.</span><Button variant="secondary" onClick={() => { setSearch(""); setCategory("All"); setAvailability(false); setDeliveryMode("any"); }}>Clear filters</Button></div>}
       </div>
     </section>
@@ -253,39 +294,42 @@ function Modal({ children, close, wide = false }: { children: React.ReactNode; c
   return <div className="overlay" onMouseDown={close}><div className={`modal ${wide ? "modal-wide" : ""}`} onMouseDown={(e) => e.stopPropagation()}>{children}<button className="modal-close" onClick={close}><Icon name="close" /></button></div></div>;
 }
 
-function MealDetail({ id, lang, close, add }: { id: number; lang: Lang; close: () => void; add: (id: number, qty: number) => void }) {
+function MealDetail({ id, lang, meals, kitchenAccepting, close, add }: { id: number; lang: Lang; meals: Meal[]; kitchenAccepting: boolean; close: () => void; add: (id: number, qty: number) => void }) {
   const meal = meals.find((m) => m.id === id)!;
   const kitchen = kitchens[meal.kitchen];
   const [qty, setQty] = useState(1);
+  const [showKitchen, setShowKitchen] = useState(false);
   return <Modal close={close} wide>
     <div className="detail-grid">
       <div className="detail-image"><img src={photos[meal.photo]} alt={meal.en} /><StatusPill status={meal.status} /></div>
       <div className="detail-copy">
         <span className="eyebrow">{meal.cat} · {meal.mode}</span><h2>{lang === "bn" ? meal.bn : meal.en}</h2>
         <p>Fragrant rice served with slow-cooked curry, seasonal vegetables, fresh salad and a touch of homemade pickle.</p>
-        <div className="detail-kitchen"><span className="avatar">{kitchen.avatar}</span><div><small>Prepared by</small><strong>{kitchen.name}</strong><span>{kitchen.student} · ★ {kitchen.rating}</span></div><Button variant="ghost">View kitchen</Button></div>
+        <div className="detail-kitchen"><span className="avatar">{kitchen.avatar}</span><div><small>Prepared by</small><strong>{kitchen.name}</strong><span>{kitchen.student} · ★ {kitchen.rating}</span></div><Button variant="ghost" onClick={() => setShowKitchen((shown) => !shown)}>{showKitchen ? "Hide kitchen" : "View kitchen"}</Button></div>
+        {showKitchen && <div className="kitchen-detail-inline"><strong>{kitchen.name}</strong><span>Run by {kitchen.student}</span><span>{kitchen.hall}</span><span>★ {kitchen.rating} customer rating</span><small>Student-run home kitchen · Orders are handled locally in this prototype.</small></div>}
         <div className="detail-info"><div><small>ORDER CUTOFF</small><strong>Today, 12:15 PM</strong></div><div><small>NEXT SLOT</small><strong>{meal.time}</strong></div><div><small>AVAILABLE</small><strong>{meal.portions} portions</strong></div></div>
         <label className="note-field">Special instruction <textarea placeholder="Less spicy, no onions..." /></label>
-        <div className="detail-action"><div className="stepper"><button onClick={() => setQty(Math.max(1, qty - 1))}><Icon name="minus" /></button><strong>{qty}</strong><button onClick={() => setQty(qty + 1)}><Icon name="plus" /></button></div><Button onClick={() => { add(id, qty); close(); }} disabled={meal.status === "closed" || meal.status === "soldout"}>Add to cart · ৳{meal.price * qty}</Button></div>
+        <div className="detail-action"><div className="stepper"><button onClick={() => setQty(Math.max(1, qty - 1))}><Icon name="minus" /></button><strong>{qty}</strong><button onClick={() => setQty(qty + 1)}><Icon name="plus" /></button></div><Button onClick={() => { add(id, qty); close(); }} disabled={!kitchenAccepting || meal.status === "closed" || meal.status === "soldout" || meal.portions <= 0}>Add to cart · ৳{meal.price * qty}</Button></div>
       </div>
     </div>
   </Modal>;
 }
 
-function CartDrawer({ cart, update, close, checkout }: { cart: Record<number, number>; update: (id: number, qty: number) => void; close: () => void; checkout: () => void }) {
-  const entries = Object.entries(cart).filter(([, qty]) => qty > 0).map(([id, qty]) => ({ meal: meals.find((m) => m.id === Number(id))!, qty }));
+function CartDrawer({ cart, meals, update, close, checkout, accepting }: { cart: Record<number, number>; meals: Meal[]; update: (id: number, qty: number) => void; close: () => void; checkout: () => void; accepting: boolean }) {
+  const entries = Object.entries(cart).filter(([, qty]) => qty > 0).map(([id, qty]) => ({ meal: meals.find((m) => m.id === Number(id))!, qty })).filter((entry) => Boolean(entry.meal));
   const subtotal = entries.reduce((sum, x) => sum + x.meal.price * x.qty, 0);
   return <div className="drawer-overlay" onMouseDown={close}><aside className="drawer" onMouseDown={(e) => e.stopPropagation()}>
     <div className="drawer-head"><div><span className="eyebrow">Your order</span><h2>Cart <small>{entries.length} items</small></h2></div><button className="modal-close static" onClick={close}><Icon name="close" /></button></div>
     <div className="cart-kitchen"><span className="mini-avatar">{kitchens[0].avatar}</span><div><strong>{kitchens[0].name}</strong><small>Delivery at 1:00–1:30 PM</small></div></div>
     <div className="cart-items">{entries.map(({ meal, qty }) => <div className="cart-item" key={meal.id}><img src={photos[meal.photo]} alt={meal.en} /><div><strong>{meal.en}</strong><small>৳{meal.price}</small><div className="mini-stepper"><button onClick={() => update(meal.id, qty - 1)}>−</button><span>{qty}</span><button onClick={() => update(meal.id, qty + 1)}>+</button></div></div><b>৳{meal.price * qty}</b></div>)}</div>
     {entries.length === 0 && <div className="empty-cart"><Icon name="bag" size={40} /><strong>Your cart is empty</strong><span>Add something delicious from today's menu.</span></div>}
-    <div className="drawer-summary"><div><span>Subtotal</span><strong>৳{subtotal}</strong></div><div><span>Delivery fee</span><strong>৳{subtotal ? 25 : 0}</strong></div><div className="total"><span>Total</span><strong>৳{subtotal ? subtotal + 25 : 0}</strong></div><Button onClick={checkout} disabled={!subtotal} className="full">Continue to checkout <Icon name="arrow" /></Button></div>
+    {!accepting && <p className="dashboard-notice">This kitchen is paused and is not accepting orders right now.</p>}
+    <div className="drawer-summary"><div><span>Subtotal</span><strong>৳{subtotal}</strong></div><div><span>Delivery fee</span><strong>৳{subtotal ? 25 : 0}</strong></div><div className="total"><span>Total</span><strong>৳{subtotal ? subtotal + 25 : 0}</strong></div><Button onClick={checkout} disabled={!subtotal || !accepting} className="full">Continue to checkout <Icon name="arrow" /></Button></div>
   </aside></div>;
 }
 
-function Checkout({ subtotal, defaultAddress, defaultCoordinates, close, placeOrder }: {
-  subtotal: number; defaultAddress: string; defaultCoordinates: Coordinates | null; close: () => void; placeOrder: (details: CheckoutDetails) => void;
+function Checkout({ subtotal, defaultAddress, defaultCoordinates, close, placeOrder, accepting }: {
+  subtotal: number; defaultAddress: string; defaultCoordinates: Coordinates | null; close: () => void; placeOrder: (details: CheckoutDetails) => void; accepting: boolean;
 }) {
   const [method, setMethod] = useState<DeliveryMethod>("delivery");
   const [address, setAddress] = useState(defaultAddress);
@@ -302,6 +346,7 @@ function Checkout({ subtotal, defaultAddress, defaultCoordinates, close, placeOr
     setError("");
   }, setLocationMessage);
   const submit = () => {
+    if (!accepting) { setError("The kitchen is paused and is not accepting orders right now."); return; }
     if (method === "delivery" && !address.trim()) { setError("Please enter a delivery address or use your current location."); return; }
     if (phone.replace(/\D/g, "").length < 8) { setError("Please enter a valid phone number so the kitchen or rider can contact you."); return; }
     placeOrder({ method, address: address.trim(), phone: phone.trim(), payment, coordinates });
@@ -309,11 +354,12 @@ function Checkout({ subtotal, defaultAddress, defaultCoordinates, close, placeOr
   return <Modal close={close}>
     <div className="checkout"><span className="eyebrow">Almost there</span><h2>Checkout</h2>
       <div className="choice-grid"><button className={method === "delivery" ? "active" : ""} onClick={() => { setMethod("delivery"); setError(""); }}><Icon name="pin" /><strong>Delivery</strong><small>25–35 min · ৳25</small></button><button className={method === "pickup" ? "active" : ""} onClick={() => { setMethod("pickup"); setError(""); }}><Icon name="bag" /><strong>Pickup</strong><small>Collect from the kitchen · free</small></button></div>
-      {method === "delivery" && <div className="checkout-location-group"><label>Delivery location<input value={address} onChange={(e) => { const nextAddress = e.target.value; setAddress(nextAddress); setCoordinates((current) => current && nextAddress.startsWith(`Current location · ${current.lat.toFixed(5)}, ${current.lon.toFixed(5)}`) ? current : null); setLocationMessage(""); setError(""); }} placeholder="Hall, building, room and nearby landmark" required /></label><Button variant="secondary" onClick={useCurrentLocation}><Icon name="locate" size={17} /> Use my current location</Button>{locationMessage && <small className="helper-text">{locationMessage}</small>}{coordinates && <small className="coordinate-note"><Icon name="check" size={13} /> GPS coordinates attached to this order</small>}</div>}
+      {!accepting && <p className="form-error" role="alert">The kitchen is currently paused. Please try again later.</p>}
+      {method === "delivery" && <div className="checkout-location-group"><label>Delivery location<input value={address} onChange={(e) => { const nextAddress = e.target.value; setAddress(nextAddress); setCoordinates((current) => current && nextAddress.startsWith(`Current location · ${current.lat.toFixed(5)}, ${current.lon.toFixed(5)}`) ? current : null); setLocationMessage(""); setError(""); }} placeholder="Hall, building, room and nearby landmark" required /></label><Button variant="secondary" onClick={useCurrentLocation}><Icon name="locate" size={17} /> Use my current location</Button>{locationMessage && <small className="helper-text">{locationMessage}</small>}{coordinates && <small className="coordinate-note"><Icon name="check" size={13} /> GPS coordinates attached to this order</small>}<GoogleMapPreview address={address} coordinates={coordinates} height={190} /></div>}
       <label>Phone number<input value={phone} onChange={(e) => { setPhone(e.target.value); setError(""); }} placeholder="e.g. +880 17XX-XXXXXX" inputMode="tel" required /></label>
       <div className="payment"><strong>Payment method</strong><label><input type="radio" checked={payment === "Cash on delivery"} onChange={() => setPayment("Cash on delivery")} name="pay" /> Cash on delivery <span>Recommended</span></label><label><input type="radio" checked={payment === "bKash / Nagad (demo)"} onChange={() => setPayment("bKash / Nagad (demo)")} name="pay" /> bKash / Nagad <small>Demo selection only</small></label></div>
       {error && <p role="alert" className="form-error">{error}</p>}
-      <div className="checkout-total"><span>Total to pay</span><strong>৳{total}</strong></div><Button className="full" onClick={submit}>Place order <Icon name="arrow" /></Button>
+      <div className="checkout-total"><span>Total to pay</span><strong>৳{total}</strong></div><Button className="full" onClick={submit} disabled={!accepting}>Place order <Icon name="arrow" /></Button>
       <p className="demo-note">Prototype checkout: no real payment is processed. Your order is saved in this browser only.</p>
     </div>
   </Modal>;
@@ -381,7 +427,7 @@ function LocationEditor({ initialAddress, initialCoordinates, close, save }: { i
     setMessage("GPS position captured. Add a hall, building, room or landmark to help the rider find you.");
     setError("");
   }, setMessage);
-  return <Modal close={close}><div className="location-editor"><span className="eyebrow">Delivery address</span><h2>Where should we deliver?</h2><p>Use your current position or enter a clear address and landmark.</p><label>Address<input value={address} onChange={(e) => { const nextAddress = e.target.value; setAddress(nextAddress); setCoordinates((current) => current && nextAddress.startsWith(`Current location · ${current.lat.toFixed(5)}, ${current.lon.toFixed(5)}`) ? current : null); setMessage(""); }} placeholder="Hall, building, room and landmark" /></label><Button variant="secondary" onClick={useCurrentLocation}><Icon name="locate" size={17} /> Use my current location</Button>{message && <small className="helper-text">{message}</small>}{coordinates && <small className="coordinate-note"><Icon name="check" size={13} /> GPS coordinates will be attached to your checkout</small>}{error && <p className="form-error">{error}</p>}<Button className="full" onClick={() => { if (!address.trim()) { setError("Enter an address or use your current location."); return; } save(address.trim(), coordinates); }}>Save location</Button><p className="demo-note">Your address is kept in this browser for this prototype.</p></div></Modal>;
+  return <Modal close={close} wide><div className="location-editor"><span className="eyebrow">Delivery address</span><h2>Where should we deliver?</h2><p>Enter an address or use your current position. The map preview updates to the address or GPS coordinates you choose.</p><label>Address<input value={address} onChange={(e) => { const nextAddress = e.target.value; setAddress(nextAddress); setCoordinates((current) => current && nextAddress.startsWith(`Current location · ${current.lat.toFixed(5)}, ${current.lon.toFixed(5)}`) ? current : null); setMessage(""); setError(""); }} placeholder="Hall, building, room and landmark" /></label><Button variant="secondary" onClick={useCurrentLocation}><Icon name="locate" size={17} /> Use my current location</Button>{message && <small className="helper-text">{message}</small>}{coordinates && <small className="coordinate-note"><Icon name="check" size={13} /> GPS coordinates will be attached to your checkout</small>}<GoogleMapPreview address={address} coordinates={coordinates} height={260} />{error && <p className="form-error">{error}</p>}<Button className="full" onClick={() => { if (!address.trim()) { setError("Enter an address or use your current location."); return; } save(address.trim(), coordinates); }}>Save location</Button><p className="demo-note">Your address is kept in this browser for this prototype. Google Maps opens separately if you need to inspect the location.</p></div></Modal>;
 }
 
 function OrdersModal({ orders, close, track }: { orders: StoredOrder[]; close: () => void; track: (order: StoredOrder) => void }) {
@@ -400,61 +446,162 @@ const orderRows = [
   { id: "#1021", customer: "Nafis Khan", meal: "Rice & Chicken Curry × 1", time: "12:30 PM", amount: 145, status: "Delivered" },
 ];
 
+type MealDraft = Omit<Meal, "id" | "kitchen" | "photo">;
+type ScheduleSlot = { name: string; start: string; end: string; enabled: boolean };
+type AdminUser = { id: string; name: string; email: string; role: string; status: "Active" | "Blocked" };
+type DashboardOrderRow = { id: string; customer: string; meal: string; time: string; amount: number; status: string; order?: StoredOrder };
+
 function DashboardShell({ role, children, active, setActive }: { role: "kitchen" | "admin"; children: React.ReactNode; active: string; setActive: (x: string) => void }) {
   const kitchenNav = [["home", "Overview"], ["grid", "Menu items"], ["clock", "Schedule"], ["orders", "Orders"], ["chart", "Earnings"]];
   const adminNav = [["home", "Overview"], ["users", "Kitchens"], ["orders", "All orders"], ["grid", "Categories"], ["user", "Users"], ["chart", "Analytics"]];
   const nav = role === "kitchen" ? kitchenNav : adminNav;
-  return <div className="dashboard-shell"><aside className="sidebar"><Logo /><div className="workspace"><span className="avatar">{role === "kitchen" ? "NR" : "AD"}</span><div><small>{role === "kitchen" ? "KITCHEN WORKSPACE" : "PLATFORM ADMIN"}</small><strong>{role === "kitchen" ? "Nabila's Kitchen" : "Khabar Koi"}</strong></div></div><nav>{nav.map(([icon, label]) => <button key={label} onClick={() => setActive(label)} className={active === label ? "active" : ""}><Icon name={icon} />{label}</button>)}</nav><div className="sidebar-help"><strong>Need help?</strong><span>Our team is here for you.</span><Button variant="secondary">Contact support</Button></div></aside><section className="dashboard-content">{children}</section></div>;
+  return <div className="dashboard-shell"><aside className="sidebar"><Logo /><div className="workspace"><span className="avatar">{role === "kitchen" ? "NR" : "AD"}</span><div><small>{role === "kitchen" ? "KITCHEN WORKSPACE" : "PLATFORM ADMIN"}</small><strong>{role === "kitchen" ? "Nabila's Kitchen" : "Khabar Koi"}</strong></div></div><nav aria-label={`${role} navigation`}>{nav.map(([icon, label]) => <button key={label} onClick={() => setActive(label)} className={active === label ? "active" : ""} aria-current={active === label ? "page" : undefined}><Icon name={icon} />{label}</button>)}</nav><div className="sidebar-help"><strong>Need help?</strong><span>Our team is here for you.</span><Button variant="secondary" onClick={() => { window.location.href = "mailto:support@khabarkoi.example?subject=Khabar%20Koi%20support"; }}>Contact support</Button></div></aside><section className="dashboard-content">{children}</section></div>;
 }
 
 function Metric({ label, value, change, icon }: { label: string; value: string; change: string; icon: string }) {
   return <div className="metric"><div className="metric-top"><span>{label}</span><i><Icon name={icon} /></i></div><strong>{value}</strong><small>{change}</small></div>;
 }
 
-function KitchenDashboard() {
+function MealEditorModal({ initial, categories, close, save }: { initial: Meal | null; categories: string[]; close: () => void; save: (draft: MealDraft) => void }) {
+  const [name, setName] = useState(initial?.en ?? "");
+  const [nameBn, setNameBn] = useState(initial?.bn ?? "");
+  const [price, setPrice] = useState(String(initial?.price ?? ""));
+  const [category, setCategory] = useState(initial?.cat ?? "Lunch");
+  const [portions, setPortions] = useState(String(initial?.portions ?? "5"));
+  const [time, setTime] = useState(initial?.time ?? "1:00 PM");
+  const [mode, setMode] = useState(initial?.mode ?? "Delivery · Pickup");
+  const [status, setStatus] = useState<Status>(initial?.status ?? "open");
+  const [error, setError] = useState("");
+  return <Modal close={close} wide><div className="dashboard-form-modal"><span className="eyebrow">Menu management</span><h2>{initial ? "Edit menu item" : "Add a menu item"}</h2><p>Changes are saved in this browser and immediately appear in the customer menu.</p><form onSubmit={(event) => { event.preventDefault(); const parsedPrice = Number(price); const parsedPortions = Number(portions); if (!name.trim() || !Number.isFinite(parsedPrice) || parsedPrice <= 0 || !Number.isInteger(parsedPortions) || parsedPortions < 0) { setError("Enter a name, a positive price, and a whole-number portion count."); return; } save({ en: name.trim(), bn: nameBn.trim() || name.trim(), price: parsedPrice, cat: category, portions: parsedPortions, time: time.trim() || "Available today", mode, status: parsedPortions === 0 && status === "open" ? "soldout" : status }); }}>
+    <div className="form-grid"><label>Meal name (English)<input value={name} onChange={(e) => setName(e.target.value)} required placeholder="e.g. Chicken khichuri" /></label><label>Meal name (Bangla)<input value={nameBn} onChange={(e) => setNameBn(e.target.value)} placeholder="বাংলা নাম" /></label><label>Price (৳)<input type="number" min="1" step="1" value={price} onChange={(e) => setPrice(e.target.value)} required /></label><label>Portions available<input type="number" min="0" step="1" value={portions} onChange={(e) => setPortions(e.target.value)} required /></label><label>Category<select value={category} onChange={(e) => setCategory(e.target.value)}>{categories.filter((x) => x !== "All").map((x) => <option key={x}>{x}</option>)}{!categories.includes(category) && <option>{category}</option>}</select></label><label>Ready time<input value={time} onChange={(e) => setTime(e.target.value)} placeholder="1:00 PM" /></label><label>Fulfilment<select value={mode} onChange={(e) => setMode(e.target.value)}><option>Delivery · Pickup</option><option>Delivery</option><option>Pickup</option></select></label><label>Availability<select value={status} onChange={(e) => setStatus(e.target.value as Status)}><option value="open">Open now</option><option value="upcoming">Pre-order / upcoming</option><option value="closed">Closed</option><option value="soldout">Sold out</option></select></label></div>
+    {error && <p className="form-error" role="alert">{error}</p>}<div className="form-actions"><button type="button" className="button button-secondary" onClick={close}>Cancel</button><button className="button button-primary" type="submit">{initial ? "Save changes" : "Add item"}</button></div>
+  </form></div></Modal>;
+}
+
+function rowsFromOrders(orders: StoredOrder[]): DashboardOrderRow[] {
+  if (!orders.length) return orderRows.map((row) => ({ ...row }));
+  return orders.map((order) => ({ id: order.id, customer: order.customer || "Guest customer", meal: order.items.map((item) => `${item.name} × ${item.qty}`).join(", "), time: new Date(order.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }), amount: order.total, status: order.status, order }));
+}
+
+function KitchenDashboard({ meals, setMeals, orders, setOrders, categories, accepting, setAccepting }: { meals: Meal[]; setMeals: React.Dispatch<React.SetStateAction<Meal[]>>; orders: StoredOrder[]; setOrders: React.Dispatch<React.SetStateAction<StoredOrder[]>>; categories: string[]; accepting: boolean; setAccepting: (next: boolean) => void }) {
   const [active, setActive] = useState("Overview");
-  const [accepting, setAccepting] = useState(true);
-  const [statuses, setStatuses] = useState<Record<string, string>>(Object.fromEntries(orderRows.map((o) => [o.id, o.status])));
-  const [portions, setPortions] = useState(8);
-  const changeStatus = (id: string) => {
+  const [editor, setEditor] = useState<Meal | "new" | null>(null);
+  const [menuSearch, setMenuSearch] = useState("");
+  const [menuStatusFilter, setMenuStatusFilter] = useState("");
+  const [notice, setNotice] = useState("");
+  const [demoStatuses, setDemoStatuses] = useState<Record<string, string>>(() => Object.fromEntries(orderRows.map((o) => [o.id, o.status])));
+  const [schedule, setSchedule] = useState<ScheduleSlot[]>(() => readStorage<ScheduleSlot[]>("khabarkoi.kitchen.schedule", [
+    { name: "Breakfast", start: "08:00", end: "10:00", enabled: false }, { name: "Lunch", start: "12:30", end: "14:30", enabled: true }, { name: "Dinner", start: "19:00", end: "21:00", enabled: true },
+  ]));
+  useEffect(() => { localStorage.setItem("khabarkoi.kitchen.schedule", JSON.stringify(schedule)); }, [schedule]);
+  const myMeals = meals.filter((meal) => meal.kitchen === 0);
+  const available = myMeals.filter((m) => m.status === "open" && m.portions > 0).length;
+  const effectiveRows = rowsFromOrders(orders).map((row) => row.order ? row : ({ ...row, status: demoStatuses[row.id] || row.status }));
+  const advanceOrder = (row: DashboardOrderRow) => {
     const flow = ["Confirmed", "Preparing", "Ready", "Delivered"];
-    setStatuses({ ...statuses, [id]: flow[Math.min(flow.indexOf(statuses[id]) + 1, 3)] });
+    const next = flow[Math.min(Math.max(0, flow.indexOf(row.status)) + 1, flow.length - 1)];
+    if (row.order) setOrders((current) => current.map((order) => order.id === row.id ? { ...order, status: next } : order));
+    else setDemoStatuses((current) => ({ ...current, [row.id]: next }));
+    setNotice(`${row.id} moved to ${next}.`);
   };
-  return <DashboardShell role="kitchen" active={active} setActive={setActive}>
-    <div className="dashboard-header"><div><span className="eyebrow">Monday, 16 June</span><h1>Good morning, Nabila</h1><p>Here's how your kitchen is doing today.</p></div><div className="open-control"><span><i className={accepting ? "on" : ""}></i><div><strong>{accepting ? "Accepting orders" : "Kitchen paused"}</strong><small>Next cutoff at 12:15 PM</small></div></span><button onClick={() => setAccepting(!accepting)} className={accepting ? "switch on" : "switch"}><i></i></button></div></div>
-    <div className="metrics"><Metric label="Today's sales" value="৳2,840" change="↑ 18% from yesterday" icon="chart" /><Metric label="Orders today" value="18" change="12 completed · 6 active" icon="orders" /><Metric label="Avg. rating" value="4.9" change="Based on 86 reviews" icon="user" /><Metric label="Available items" value="3" change="1 item low in stock" icon="grid" /></div>
-    <div className="dashboard-grid">
-      <div className="panel span-2"><div className="panel-head"><div><h2>Incoming orders</h2><span>Updated just now</span></div><Button variant="ghost">View all <Icon name="arrow" /></Button></div><div className="order-table"><div className="table-head"><span>ORDER</span><span>CUSTOMER & ITEM</span><span>SLOT</span><span>AMOUNT</span><span>STATUS</span><span></span></div>{orderRows.map((order) => <div className="table-row" key={order.id}><strong>{order.id}</strong><span><b>{order.customer}</b><small>{order.meal}</small></span><span>{order.time}</span><strong>৳{order.amount}</strong><span className={`order-status ${statuses[order.id].toLowerCase()}`}>{statuses[order.id]}</span><button className="row-action" onClick={() => changeStatus(order.id)}><Icon name="chevron" /></button></div>)}</div></div>
-      <div className="panel schedule-panel"><div className="panel-head"><div><h2>Today's schedule</h2><span>3 meal windows</span></div></div>{[["Breakfast", "8:00–10:00 AM", "Closed"], ["Lunch", "12:30–2:30 PM", "Live"], ["Dinner", "7:00–9:00 PM", "Upcoming"]].map((slot) => <div className="schedule-item" key={slot[0]}><span className={`schedule-icon ${slot[2].toLowerCase()}`}><Icon name="clock" /></span><div><strong>{slot[0]}</strong><small>{slot[1]}</small></div><b className={slot[2].toLowerCase()}>{slot[2]}</b></div>)}<Button variant="secondary" className="full">Edit schedule</Button></div>
-      <div className="panel span-2"><div className="panel-head"><div><h2>Today's menu</h2><span>Manage portions and availability</span></div><Button><Icon name="plus" /> Add item</Button></div><div className="menu-manage">{meals.filter((m) => m.kitchen === 0).map((meal, i) => <div className="manage-item" key={meal.id}><img src={photos[meal.photo]} alt={meal.en} /><div><strong>{meal.en}</strong><small>৳{meal.price} · {meal.time}</small></div><label>PORTIONS<div className="mini-stepper"><button onClick={() => i === 0 && setPortions(Math.max(0, portions - 1))}>−</button><span>{i === 0 ? portions : meal.portions}</span><button onClick={() => i === 0 && setPortions(portions + 1)}>+</button></div></label><button className="more">•••</button></div>)}</div></div>
-      <div className="panel sales-panel"><div className="panel-head"><div><h2>Sales this week</h2><span>৳12,480 total</span></div></div><div className="bar-chart">{[45, 64, 52, 82, 71, 94, 38].map((height, i) => <div key={i}><span style={{ height: `${height}%` }}></span><small>{["M", "T", "W", "T", "F", "S", "S"][i]}</small></div>)}</div></div>
-    </div>
+  const saveMeal = (draft: MealDraft) => {
+    if (editor && editor !== "new") {
+      setMeals((current) => current.map((meal) => meal.id === editor.id ? { ...meal, ...draft } : meal));
+      setNotice(`${draft.en} updated.`);
+    } else {
+      const newId = Math.max(0, ...meals.map((meal) => meal.id)) + 1;
+      setMeals((current) => [...current, { ...draft, id: newId, kitchen: 0, photo: newId % photos.length }]);
+      setNotice(`${draft.en} added to the menu.`);
+    }
+    setEditor(null);
+  };
+  const updateMeal = (meal: Meal, patch: Partial<Meal>) => setMeals((current) => current.map((item) => item.id === meal.id ? { ...item, ...patch } : item));
+  const exportOrders = () => downloadCsv("khabarkoi-kitchen-orders.csv", ["Order", "Customer", "Items", "Amount", "Status", "Time"], effectiveRows.map((r) => [r.id, r.customer, r.meal, r.amount, r.status, r.time]));
+  return <DashboardShell role="kitchen" active={active} setActive={(value) => { setActive(value); setNotice(""); }}>
+    <div className="dashboard-header"><div><span className="eyebrow">KITCHEN WORKSPACE · {active.toUpperCase()}</span><h1>{active === "Overview" ? "Good morning, Nabila" : active}</h1><p>{active === "Overview" ? "A real-time view of your campus kitchen prototype." : `Manage your kitchen ${active.toLowerCase()} here.`}</p></div><div className="open-control"><span><i className={accepting ? "on" : ""}></i><div><strong>{accepting ? "Accepting orders" : "Kitchen paused"}</strong><small>{accepting ? "Customers can place orders" : "New orders are paused"}</small></div></span><button onClick={() => { setAccepting(!accepting); setNotice(accepting ? "Kitchen paused; customers will see the pause on this dashboard." : "Kitchen is accepting orders again."); }} className={accepting ? "switch on" : "switch"} aria-label="Toggle kitchen accepting orders"><i></i></button></div></div>
+    {notice && <p className="dashboard-notice" role="status">{notice}</p>}
+    {active === "Overview" && <>
+      <div className="metrics"><Metric label="Today's sales" value={`৳${orders.reduce((sum, order) => sum + order.total, 2840).toLocaleString()}`} change="Includes demo baseline + placed orders" icon="chart" /><Metric label="Orders today" value={String(18 + orders.length)} change={`${orders.length} real prototype orders`} icon="orders" /><Metric label="Avg. rating" value="4.9" change="Based on demo reviews" icon="user" /><Metric label="Available items" value={String(available)} change={`${myMeals.length} items in your menu`} icon="grid" /></div>
+      <div className="dashboard-grid"><div className="panel span-2"><div className="panel-head"><div><h2>Incoming orders</h2><span>Click an order action to advance its status</span></div><Button variant="ghost" onClick={() => setActive("Orders")}>View all <Icon name="arrow" /></Button></div><OrderTable rows={effectiveRows.slice(0, 4)} advance={advanceOrder} /></div><div className="panel schedule-panel"><div className="panel-head"><div><h2>Meal schedule</h2><span>{schedule.filter((s) => s.enabled).length} time windows enabled</span></div></div>{schedule.map((slot) => <div className="schedule-item" key={slot.name}><span className={`schedule-icon ${slot.enabled ? "live" : "closed"}`}><Icon name="clock" /></span><div><strong>{slot.name}</strong><small>{slot.start}–{slot.end}</small></div><b className={slot.enabled ? "live" : "closed"}>{slot.enabled ? "Live" : "Off"}</b></div>)}<Button variant="secondary" className="full" onClick={() => setActive("Schedule")}>Edit schedule</Button></div>
+      <div className="panel span-2"><div className="panel-head"><div><h2>Today's menu</h2><span>Manage portions and availability</span></div><Button onClick={() => setEditor("new")}><Icon name="plus" /> Add item</Button></div><MenuManageList meals={myMeals.slice(0, 3)} updateMeal={updateMeal} editMeal={(meal) => setEditor(meal)} deleteMeal={(meal) => setMeals((current) => current.filter((item) => item.id !== meal.id))} /></div><div className="panel sales-panel"><div className="panel-head"><div><h2>Sales this week</h2><span>৳{(12480 + orders.reduce((sum, order) => sum + order.total, 0)).toLocaleString()} including demo baseline</span></div></div><MiniBarChart /></div></div>
+    </>}
+    {active === "Menu items" && <div className="panel"><div className="panel-head"><div><h2>Your menu</h2><span>{myMeals.length} items · changes also appear on the customer menu</span></div><Button onClick={() => setEditor("new")}><Icon name="plus" /> Add item</Button></div><div className="panel-tools dashboard-filters"><div><Icon name="search" /><input value={menuSearch} onChange={(e) => setMenuSearch(e.target.value)} placeholder="Search your menu" /></div><select aria-label="Filter menu availability" value={menuStatusFilter} onChange={(e) => setMenuStatusFilter(e.target.value)}><option value="">All availability</option><option value="open">Open now</option><option value="upcoming">Upcoming</option><option value="closed">Closed</option><option value="soldout">Sold out</option></select></div><MenuManageList meals={myMeals.filter((m) => `${m.en} ${m.bn} ${m.cat}`.toLowerCase().includes(menuSearch.toLowerCase()) && (!menuStatusFilter || m.status === menuStatusFilter))} updateMeal={updateMeal} editMeal={(meal) => setEditor(meal)} deleteMeal={(meal) => { setMeals((current) => current.filter((item) => item.id !== meal.id)); setNotice(`${meal.en} deleted.`); }} /></div>}
+    {active === "Schedule" && <div className="panel"><div className="panel-head"><div><h2>Meal schedule</h2><span>Enable and adjust the time windows offered to customers.</span></div><Button variant="secondary" onClick={() => setSchedule([{ name: "Breakfast", start: "08:00", end: "10:00", enabled: false }, { name: "Lunch", start: "12:30", end: "14:30", enabled: true }, { name: "Dinner", start: "19:00", end: "21:00", enabled: true }])}>Reset defaults</Button></div><div className="schedule-editor">{schedule.map((slot, index) => <div className="schedule-edit-row" key={slot.name}><div><strong>{slot.name}</strong><small>{slot.enabled ? "Accepting orders for this window" : "This time window is turned off"}</small></div><label>Start<input type="time" value={slot.start} onChange={(e) => setSchedule((list) => list.map((row, i) => i === index ? { ...row, start: e.target.value } : row))} /></label><label>End<input type="time" value={slot.end} onChange={(e) => setSchedule((list) => list.map((row, i) => i === index ? { ...row, end: e.target.value } : row))} /></label><button className={`switch ${slot.enabled ? "on" : ""}`} onClick={() => setSchedule((list) => list.map((row, i) => i === index ? { ...row, enabled: !row.enabled } : row))} aria-label={`Toggle ${slot.name}`}><i /></button></div>)}</div><p className="demo-note">Your schedule is saved locally in this browser. A connected backend would synchronize it across accounts.</p></div>}
+    {active === "Orders" && <div className="panel"><div className="panel-head"><div><h2>Order management</h2><span>Advance statuses as the kitchen prepares each order.</span></div><Button variant="secondary" onClick={exportOrders}>Export CSV</Button></div><OrderTable rows={effectiveRows} advance={advanceOrder} /></div>}
+    {active === "Earnings" && <><div className="metrics"><Metric label="Recorded orders" value={String(orders.length)} change="Orders placed in this browser" icon="orders" /><Metric label="Order revenue" value={`৳${orders.reduce((sum, order) => sum + order.total, 0).toLocaleString()}`} change="From locally stored orders" icon="chart" /><Metric label="Average order" value={`৳${orders.length ? Math.round(orders.reduce((sum, order) => sum + order.total, 0) / orders.length) : 0}`} change="Calculated from your orders" icon="bag" /><Metric label="Menu items" value={String(myMeals.length)} change={`${available} currently available`} icon="grid" /></div><div className="panel"><div className="panel-head"><div><h2>Recent transactions</h2><span>Amounts include the demo checkout total.</span></div><Button variant="secondary" onClick={exportOrders}>Download report</Button></div>{orders.length ? <OrderTable rows={rowsFromOrders(orders)} advance={() => {}} showAction={false} /> : <div className="empty-state"><Icon name="chart" size={30} /><strong>No real orders recorded yet</strong><span>Place a test order from the customer view to see it here.</span></div>}</div></>}
+    {editor && <MealEditorModal initial={editor === "new" ? null : editor} categories={categories} close={() => setEditor(null)} save={saveMeal} />}
   </DashboardShell>;
 }
 
-const adminKitchens = kitchens.map((k, i) => ({ ...k, orders: [248, 186, 312, 154, 221, 98][i], status: i === 5 ? "Suspended" : i === 4 ? "Pending" : "Approved", revenue: [34200, 28640, 41180, 19750, 26420, 12380][i] }));
+function MenuManageList({ meals, updateMeal, editMeal, deleteMeal }: { meals: Meal[]; updateMeal: (meal: Meal, patch: Partial<Meal>) => void; editMeal: (meal: Meal) => void; deleteMeal: (meal: Meal) => void }) {
+  if (!meals.length) return <div className="empty-state"><Icon name="grid" size={30} /><strong>No menu items found</strong><span>Add a new item or clear your search.</span></div>;
+  return <div className="menu-manage menu-manage-functional">{meals.map((meal) => <div className="manage-item" key={meal.id}><img src={photos[meal.photo]} alt={meal.en} /><div className="manage-meal-name"><strong>{meal.en}</strong><small>৳{meal.price} · {meal.time}</small><small>{meal.cat} · {meal.status}</small></div><label>PORTIONS<div className="mini-stepper"><button aria-label={`Reduce ${meal.en} portions`} onClick={() => { const qty = Math.max(0, meal.portions - 1); updateMeal(meal, { portions: qty, status: qty === 0 && meal.status === "open" ? "soldout" : meal.status }); }}>−</button><span>{meal.portions}</span><button aria-label={`Increase ${meal.en} portions`} onClick={() => updateMeal(meal, { portions: meal.portions + 1, status: meal.status === "soldout" ? "open" : meal.status })}>+</button></div></label><div className="manage-actions"><button title="Edit item" onClick={() => editMeal(meal)}>Edit</button><button title="Toggle availability" onClick={() => updateMeal(meal, { status: meal.status === "open" ? "closed" : "open", portions: meal.status === "open" ? meal.portions : Math.max(1, meal.portions) })}>{meal.status === "open" ? "Pause" : "Open"}</button><button title="Delete item" onClick={() => { if (window.confirm(`Delete ${meal.en} from the menu?`)) deleteMeal(meal); }}>×</button></div></div>)}</div>;
+}
 
-function AdminDashboard() {
+function OrderTable({ rows, advance, showAction = true }: { rows: DashboardOrderRow[]; advance: (row: DashboardOrderRow) => void; showAction?: boolean }) {
+  return <div className="table-scroll"><div className="order-table"><div className="table-head"><span>ORDER</span><span>CUSTOMER & ITEM</span><span>TIME</span><span>AMOUNT</span><span>STATUS</span>{showAction && <span>ACTION</span>}</div>{rows.map((order) => <div className="table-row" key={order.id}><strong>{order.id}</strong><span><b>{order.customer}</b><small>{order.meal}</small></span><span>{order.time}</span><strong>৳{order.amount}</strong><span className={`order-status ${order.status.toLowerCase()}`}>{order.status}</span>{showAction && <button className="row-action" title={`Advance ${order.id} status`} onClick={() => advance(order)}><Icon name="chevron" /></button>}</div>)}</div>{!rows.length && <div className="empty-state"><strong>No orders yet</strong><span>New checkout orders will appear here.</span></div>}</div>;
+}
+
+function MiniBarChart() {
+  const values = [45, 64, 52, 82, 71, 94, 38];
+  return <div className="bar-chart">{values.map((height, i) => <div key={i}><span style={{ height: `${height}%` }}></span><small>{["M", "T", "W", "T", "F", "S", "S"][i]}</small></div>)}</div>;
+}
+
+const initialAdminKitchens = kitchens.map((k, i) => ({ ...k, orders: [248, 186, 312, 154, 221, 98][i], status: i === 5 ? "Suspended" : i === 4 ? "Pending" : "Approved", revenue: [34200, 28640, 41180, 19750, 26420, 12380][i] }));
+const initialAdminUsers: AdminUser[] = [
+  { id: "u1", name: "Sadia Rahman", email: "sadia@example.com", role: "Customer", status: "Active" },
+  { id: "u2", name: "Rafi Ahmed", email: "rafi@example.com", role: "Customer", status: "Active" },
+  { id: "u3", name: "Nabila Rahman", email: "nabila@example.com", role: "Kitchen owner", status: "Active" },
+  { id: "u4", name: "Adnan Kabir", email: "adnan@example.com", role: "Rider", status: "Blocked" },
+];
+
+function AdminDashboard({ orders, setOrders, categories, setCategories, meals }: { orders: StoredOrder[]; setOrders: React.Dispatch<React.SetStateAction<StoredOrder[]>>; categories: string[]; setCategories: React.Dispatch<React.SetStateAction<string[]>>; meals: Meal[] }) {
   const [active, setActive] = useState("Overview");
-  const [list, setList] = useState(adminKitchens);
-  const setKitchenStatus = (index: number, status: string) => setList(list.map((k, i) => i === index ? { ...k, status } : k));
-  return <DashboardShell role="admin" active={active} setActive={setActive}>
-    <div className="dashboard-header"><div><span className="eyebrow">PLATFORM OVERVIEW</span><h1>Admin command center</h1><p>Monitor kitchens, orders, users and platform health.</p></div><div className="header-date"><Icon name="clock" /> Last 30 days <span>⌄</span></div></div>
-    <div className="metrics"><Metric label="Gross sales" value="৳4.82L" change="↑ 22.4% this month" icon="chart" /><Metric label="Total orders" value="3,248" change="↑ 14.8% this month" icon="orders" /><Metric label="Active kitchens" value="42" change="5 awaiting approval" icon="grid" /><Metric label="Active users" value="8,420" change="624 new this month" icon="users" /></div>
-    <div className="admin-top">
-      <div className="panel revenue-panel"><div className="panel-head"><div><h2>Sales performance</h2><span>Revenue and orders over time</span></div><div className="legend"><span><i></i>Revenue</span><span><i></i>Orders</span></div></div><div className="line-chart"><div className="chart-y"><span>100k</span><span>75k</span><span>50k</span><span>25k</span><span>0</span></div><svg viewBox="0 0 600 190" preserveAspectRatio="none"><defs><linearGradient id="area" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#1f7a55" stopOpacity=".22" /><stop offset="1" stopColor="#1f7a55" stopOpacity="0" /></linearGradient></defs><path d="M0 160 C60 145,70 110,120 125 S210 80,270 92 S360 42,420 65 S520 20,600 28 L600 190 L0 190Z" fill="url(#area)" /><path d="M0 160 C60 145,70 110,120 125 S210 80,270 92 S360 42,420 65 S520 20,600 28" fill="none" stroke="#1f7a55" strokeWidth="4" /><path d="M0 170 C60 160,90 145,130 150 S210 120,270 130 S370 85,430 105 S520 72,600 78" fill="none" stroke="#ec8d32" strokeWidth="3" strokeDasharray="7 6" /></svg><div className="chart-x">{["May 19", "May 26", "Jun 2", "Jun 9", "Jun 16"].map((x) => <span key={x}>{x}</span>)}</div></div></div>
-      <div className="panel quick-panel"><div className="panel-head"><div><h2>Needs attention</h2><span>5 actions pending</span></div></div><button><span className="attention-icon orange"><Icon name="users" /></span><div><strong>5 kitchen applications</strong><small>Waiting for verification</small></div><Icon name="chevron" /></button><button><span className="attention-icon red"><Icon name="orders" /></span><div><strong>3 disputed orders</strong><small>Require resolution</small></div><Icon name="chevron" /></button><button><span className="attention-icon green"><Icon name="user" /></span><div><strong>12 support tickets</strong><small>4 marked urgent</small></div><Icon name="chevron" /></button><Button className="full" variant="secondary">Open task center</Button></div>
-    </div>
-    <div className="panel"><div className="panel-head"><div><h2>Kitchen management</h2><span>Review performance and control platform access</span></div><div className="panel-tools"><div><Icon name="search" /><input placeholder="Search kitchens" /></div><Button variant="secondary">All status <span>⌄</span></Button></div></div>
-      <div className="admin-table"><div className="table-head"><span>KITCHEN</span><span>RATING</span><span>ORDERS</span><span>REVENUE</span><span>STATUS</span><span>ACTION</span></div>{list.map((k, i) => <div className="table-row" key={k.name}><span className="kitchen-cell"><i>{k.avatar}</i><span><strong>{k.name}</strong><small>{k.student} · {k.hall}</small></span></span><strong>★ {k.rating}</strong><span>{k.orders}</span><strong>৳{k.revenue.toLocaleString()}</strong><span className={`order-status ${k.status.toLowerCase()}`}>{k.status}</span><span className="admin-actions">{k.status === "Pending" && <button onClick={() => setKitchenStatus(i, "Approved")}>Approve</button>}<button onClick={() => setKitchenStatus(i, k.status === "Suspended" ? "Approved" : "Suspended")}>{k.status === "Suspended" ? "Restore" : "Suspend"}</button></span></div>)}</div>
-    </div>
+  const [list, setList] = useState(() => readStorage("khabarkoi.adminKitchens", initialAdminKitchens));
+  const [users, setUsers] = useState<AdminUser[]>(() => readStorage("khabarkoi.adminUsers", initialAdminUsers));
+  const [newCategory, setNewCategory] = useState("");
+  const [kitchenSearch, setKitchenSearch] = useState("");
+  const [kitchenFilter, setKitchenFilter] = useState("All");
+  const [userSearch, setUserSearch] = useState("");
+  const [userFilter, setUserFilter] = useState("All");
+  const [demoStatuses, setDemoStatuses] = useState<Record<string, string>>(() => Object.fromEntries(orderRows.map((o) => [o.id, o.status])));
+  const [notice, setNotice] = useState("");
+  useEffect(() => { localStorage.setItem("khabarkoi.adminKitchens", JSON.stringify(list)); }, [list]);
+  useEffect(() => { localStorage.setItem("khabarkoi.adminUsers", JSON.stringify(users)); }, [users]);
+  const setKitchenStatus = (index: number, status: string) => { setList((current: typeof initialAdminKitchens) => current.map((k, i) => i === index ? { ...k, status } : k)); setNotice(`Kitchen status changed to ${status}.`); };
+  const allRows = rowsFromOrders(orders).map((row) => row.order ? row : ({ ...row, status: demoStatuses[row.id] || row.status }));
+  const advanceOrder = (row: DashboardOrderRow) => { const flow = ["Confirmed", "Preparing", "Ready", "Delivered"]; const next = flow[Math.min(Math.max(0, flow.indexOf(row.status)) + 1, 3)]; if (row.order) setOrders((current) => current.map((order) => order.id === row.id ? { ...order, status: next } : order)); else setDemoStatuses((current) => ({ ...current, [row.id]: next })); setNotice(`${row.id} moved to ${next}.`); };
+  const exportOrders = () => downloadCsv("khabarkoi-orders.csv", ["Order", "Customer", "Items", "Amount", "Status", "Time"], allRows.map((r) => [r.id, r.customer, r.meal, r.amount, r.status, r.time]));
+  const filteredKitchens = list.map((k, index) => ({ ...k, originalIndex: index })).filter((k) => `${k.name} ${k.student} ${k.hall}`.toLowerCase().includes(kitchenSearch.toLowerCase()) && (kitchenFilter === "All" || k.status === kitchenFilter));
+  const filteredUsers = users.filter((u) => `${u.name} ${u.email} ${u.role}`.toLowerCase().includes(userSearch.toLowerCase()) && (userFilter === "All" || u.status === userFilter));
+  return <DashboardShell role="admin" active={active} setActive={(value) => { setActive(value); setNotice(""); }}>
+    <div className="dashboard-header"><div><span className="eyebrow">PLATFORM CONTROL · {active.toUpperCase()}</span><h1>{active === "Overview" ? "Admin command center" : active}</h1><p>{active === "Overview" ? "Monitor kitchens, orders, users and platform health." : `Manage platform ${active.toLowerCase()} in this prototype.`}</p></div><div className="header-date"><Icon name="clock" /> Local demo data <span>✓</span></div></div>
+    {notice && <p className="dashboard-notice" role="status">{notice}</p>}
+    {active === "Overview" && <><div className="metrics"><Metric label="Gross sales" value={`৳${(482000 + orders.reduce((sum, o) => sum + o.total, 0)).toLocaleString()}`} change="Demo baseline + test orders" icon="chart" /><Metric label="Total orders" value={(3248 + orders.length).toLocaleString()} change={`${orders.length} locally placed orders`} icon="orders" /><Metric label="Active kitchens" value={String(list.filter((k) => k.status === "Approved").length)} change={`${list.filter((k) => k.status === "Pending").length} awaiting approval`} icon="grid" /><Metric label="Active users" value={String(users.filter((u) => u.status === "Active").length)} change="Local demo accounts" icon="users" /></div><div className="admin-top"><div className="panel revenue-panel"><div className="panel-head"><div><h2>Sales performance</h2><span>Illustrative trend with local order totals shown above</span></div><div className="legend"><span><i></i>Revenue</span><span><i></i>Orders</span></div></div><div className="line-chart"><div className="chart-y"><span>100k</span><span>75k</span><span>50k</span><span>25k</span><span>0</span></div><svg viewBox="0 0 600 190" preserveAspectRatio="none"><defs><linearGradient id="area" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#1f7a55" stopOpacity=".22" /><stop offset="1" stopColor="#1f7a55" stopOpacity="0" /></linearGradient></defs><path d="M0 160 C60 145,70 110,120 125 S210 80,270 92 S360 42,420 65 S520 20,600 28 L600 190 L0 190Z" fill="url(#area)" /><path d="M0 160 C60 145,70 110,120 125 S210 80,270 92 S360 42,420 65 S520 20,600 28" fill="none" stroke="#1f7a55" strokeWidth="4" /><path d="M0 170 C60 160,90 145,130 150 S210 120,270 130 S370 85,430 105 S520 72,600 78" fill="none" stroke="#ec8d32" strokeWidth="3" strokeDasharray="7 6" /></svg><div className="chart-x">{["May 19", "May 26", "Jun 2", "Jun 9", "Jun 16"].map((x) => <span key={x}>{x}</span>)}</div></div></div><div className="panel quick-panel"><div className="panel-head"><div><h2>Needs attention</h2><span>{list.filter((k) => k.status === "Pending").length} kitchen applications pending</span></div></div><button onClick={() => setActive("Kitchens")}><span className="attention-icon orange"><Icon name="users" /></span><div><strong>Kitchen applications</strong><small>Review pending kitchens</small></div><Icon name="chevron" /></button><button onClick={() => setActive("All orders")}><span className="attention-icon red"><Icon name="orders" /></span><div><strong>Order management</strong><small>Track and advance demo orders</small></div><Icon name="chevron" /></button><button onClick={() => setActive("Users")}><span className="attention-icon green"><Icon name="user" /></span><div><strong>User access</strong><small>Manage demo accounts</small></div><Icon name="chevron" /></button><Button className="full" variant="secondary" onClick={() => setActive("Analytics")}>View analytics</Button></div></div><div className="panel"><div className="panel-head"><div><h2>Recent orders</h2><span>Change order status with the action control.</span></div><Button variant="ghost" onClick={() => setActive("All orders")}>View all <Icon name="arrow" /></Button></div><OrderTable rows={allRows.slice(0, 4)} advance={advanceOrder} /></div></>}
+    {active === "Kitchens" && <div className="panel"><div className="panel-head"><div><h2>Kitchen management</h2><span>Approve applications, suspend or restore kitchens.</span></div><span>{filteredKitchens.length} shown</span></div><div className="panel-tools dashboard-filters"><div><Icon name="search" /><input value={kitchenSearch} onChange={(e) => setKitchenSearch(e.target.value)} placeholder="Search kitchens" /></div><select value={kitchenFilter} onChange={(e) => setKitchenFilter(e.target.value)} aria-label="Filter kitchen status"><option>All</option><option>Pending</option><option>Approved</option><option>Suspended</option></select></div><div className="admin-table"><div className="table-head"><span>KITCHEN</span><span>RATING</span><span>ORDERS</span><span>REVENUE</span><span>STATUS</span><span>ACTION</span></div>{filteredKitchens.map((k) => <div className="table-row" key={k.name}><span className="kitchen-cell"><i>{k.avatar}</i><span><strong>{k.name}</strong><small>{k.student} · {k.hall}</small></span></span><strong>★ {k.rating}</strong><span>{k.orders}</span><strong>৳{k.revenue.toLocaleString()}</strong><span className={`order-status ${k.status.toLowerCase()}`}>{k.status}</span><span className="admin-actions">{k.status === "Pending" && <button onClick={() => setKitchenStatus(k.originalIndex, "Approved")}>Approve</button>}<button onClick={() => setKitchenStatus(k.originalIndex, k.status === "Suspended" ? "Approved" : "Suspended")}>{k.status === "Suspended" ? "Restore" : "Suspend"}</button></span></div>)}</div></div>}
+    {active === "All orders" && <div className="panel"><div className="panel-head"><div><h2>All orders</h2><span>Advance through Confirmed → Preparing → Ready → Delivered.</span></div><Button variant="secondary" onClick={exportOrders}>Export CSV</Button></div><OrderTable rows={allRows} advance={advanceOrder} /></div>}
+    {active === "Categories" && <div className="panel"><div className="panel-head"><div><h2>Food categories</h2><span>Changes immediately update the customer menu filters and item editor.</span></div><span>{categories.filter((c) => c !== "All").length} categories</span></div><form className="add-category-form" onSubmit={(event) => { event.preventDefault(); const label = newCategory.trim(); if (!label || categories.some((c) => c.toLowerCase() === label.toLowerCase())) { setNotice("Enter a unique category name."); return; } setCategories((current) => [...current, label]); setNewCategory(""); setNotice(`${label} category added.`); }}><input value={newCategory} onChange={(e) => setNewCategory(e.target.value)} placeholder="New category name" aria-label="New category name" required /><button type="submit" className="button button-primary"><Icon name="plus" /> Add category</button></form><div className="category-admin-list">{categories.map((cat) => <div className="category-admin-row" key={cat}><div><strong>{cat}</strong><small>{cat === "All" ? "Default filter · cannot be deleted" : `${meals.filter((meal) => meal.cat === cat).length} menu item(s) match this category`}</small></div><span className="category-pill">{cat === "All" ? "System" : "Customizable"}</span>{cat !== "All" && <button onClick={() => { if (window.confirm(`Delete category ${cat}? Menu items in this category will remain but can be recategorized.`)) { setCategories((current) => current.filter((c) => c !== cat)); setNotice(`${cat} category deleted.`); } }}>Delete</button>}</div>)}</div></div>}
+    {active === "Users" && <div className="panel"><div className="panel-head"><div><h2>User management</h2><span>Block or restore demo accounts. No real accounts are affected.</span></div><span>{filteredUsers.length} shown</span></div><div className="panel-tools dashboard-filters"><div><Icon name="search" /><input value={userSearch} onChange={(e) => setUserSearch(e.target.value)} placeholder="Search users" /></div><select value={userFilter} onChange={(e) => setUserFilter(e.target.value)} aria-label="Filter user status"><option>All</option><option>Active</option><option>Blocked</option></select></div><div className="users-table"><div className="users-head"><span>USER</span><span>ROLE</span><span>STATUS</span><span>ACTION</span></div>{filteredUsers.map((u) => <div className="users-row" key={u.id}><div className="user-cell"><span className="avatar">{u.name.split(/\s+/).map((v) => v[0]).slice(0, 2).join("")}</span><span><strong>{u.name}</strong><small>{u.email}</small></span></div><span>{u.role}</span><span className={`order-status ${u.status === "Active" ? "approved" : "suspended"}`}>{u.status}</span><button className="text-action" onClick={() => { setUsers((current) => current.map((row) => row.id === u.id ? { ...row, status: row.status === "Active" ? "Blocked" : "Active" } : row)); setNotice(`${u.name} is now ${u.status === "Active" ? "blocked" : "active"}.`); }}>{u.status === "Active" ? "Block user" : "Restore user"}</button></div>)}</div></div>}
+    {active === "Analytics" && <><div className="metrics"><Metric label="Recorded sales" value={`৳${orders.reduce((sum, o) => sum + o.total, 0).toLocaleString()}`} change="Actual local prototype orders" icon="chart" /><Metric label="Recorded orders" value={String(orders.length)} change="Stored in this browser" icon="orders" /><Metric label="Menu catalogue" value={String(categories.length - 1)} change="Customer-facing categories" icon="grid" /><Metric label="Approved kitchens" value={String(list.filter((k) => k.status === "Approved").length)} change="In admin demo list" icon="users" /></div><div className="panel"><div className="panel-head"><div><h2>Analytics export</h2><span>Download actual prototype orders as a CSV for review.</span></div><Button onClick={exportOrders}>Export order report</Button></div>{orders.length ? <OrderTable rows={rowsFromOrders(orders)} advance={() => {}} showAction={false} /> : <div className="empty-state"><Icon name="chart" size={30} /><strong>Waiting for checkout activity</strong><span>Place customer test orders to populate real prototype metrics.</span></div>}</div></>}
   </DashboardShell>;
+}
+
+
+function downloadCsv(filename: string, headers: unknown[], rows: unknown[][]) {
+  const escapeCell = (value: unknown) => `"${String(value ?? "").replace(/"/g, '""')}"`;
+  const csv = [headers, ...rows].map((row) => row.map(escapeCell).join(",")).join("\r\n");
+  const blob = new Blob(["\uFEFF", csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a"); anchor.href = url; anchor.download = filename; anchor.click(); URL.revokeObjectURL(url);
 }
 
 export default function App() {
   const [role, setRole] = useState<Role>("customer");
   const [lang, setLang] = useState<Lang>(() => readStorage<Lang>("khabarkoi.lang", "en"));
+  const [categories, setCategories] = useState<string[]>(() => readStorage<string[]>("khabarkoi.categories", ["All", "Breakfast", "Lunch", "Dinner", "Vegetarian", "Snacks"]));
   const [theme, setTheme] = useState<Theme>(() => readStorage<Theme>("khabarkoi.theme", "light"));
+  const [kitchenAccepting, setKitchenAccepting] = useState<boolean>(() => readStorage<boolean>("khabarkoi.kitchen.accepting", true));
+  const [mealList, setMealList] = useState<Meal[]>(() => readStorage<Meal[]>("khabarkoi.meals", initialMeals));
   const [cart, setCart] = useState<Record<number, number>>(() => readStorage<Record<number, number>>("khabarkoi.cart", {}));
   const [user, setUser] = useState<DemoUser | null>(() => readStorage<DemoUser | null>("khabarkoi.user", null));
   const [orders, setOrders] = useState<StoredOrder[]>(() => readStorage<StoredOrder[]>("khabarkoi.orders", []));
@@ -471,21 +618,23 @@ export default function App() {
 
   useEffect(() => { document.documentElement.dataset.theme = theme; localStorage.setItem("khabarkoi.theme", JSON.stringify(theme)); }, [theme]);
   useEffect(() => { localStorage.setItem("khabarkoi.lang", JSON.stringify(lang)); }, [lang]);
+  useEffect(() => { localStorage.setItem("khabarkoi.categories", JSON.stringify(categories)); }, [categories]);
+  useEffect(() => { localStorage.setItem("khabarkoi.meals", JSON.stringify(mealList)); }, [mealList]);
   useEffect(() => { localStorage.setItem("khabarkoi.cart", JSON.stringify(cart)); }, [cart]);
+  useEffect(() => { const indexed = new Map(mealList.map((meal) => [meal.id, meal])); setCart((current) => { const next: Record<number, number> = {}; Object.entries(current).forEach(([id, qty]) => { const meal = indexed.get(Number(id)); if (meal && qty > 0 && meal.portions > 0) next[Number(id)] = Math.min(qty, meal.portions); }); return JSON.stringify(next) === JSON.stringify(current) ? current : next; }); }, [mealList]);
   useEffect(() => { localStorage.setItem("khabarkoi.orders", JSON.stringify(orders)); }, [orders]);
   useEffect(() => { localStorage.setItem("khabarkoi.address", JSON.stringify(address)); }, [address]);
   useEffect(() => { localStorage.setItem("khabarkoi.coordinates", JSON.stringify(deliveryCoordinates)); }, [deliveryCoordinates]);
   useEffect(() => { if (user) localStorage.setItem("khabarkoi.user", JSON.stringify(user)); else localStorage.removeItem("khabarkoi.user"); }, [user]);
 
   const addItem = (id: number, qty = 1) => setCart((current) => {
-    const meal = meals.find((item) => item.id === id);
-    if (!meal || (meal.status !== "open" && meal.status !== "upcoming")) return current;
-    const maxQty = Math.max(meal.portions, current[id] || 0);
-    return { ...current, [id]: Math.min(maxQty, (current[id] || 0) + qty) };
+    const meal = mealList.find((item) => item.id === id);
+    if (!meal || !kitchenAccepting || meal.portions <= 0 || (meal.status !== "open" && meal.status !== "upcoming")) return current;
+    return { ...current, [id]: Math.min(meal.portions, (current[id] || 0) + qty) };
   });
-  const updateItem = (id: number, qty: number) => setCart((current) => ({ ...current, [id]: Math.max(0, qty) }));
+  const updateItem = (id: number, qty: number) => setCart((current) => { const next = { ...current }; const meal = mealList.find((item) => item.id === id); if (qty <= 0 || !meal || meal.portions <= 0) delete next[id]; else next[id] = Math.min(qty, meal.portions); return next; });
   const cartCount = Object.values(cart).reduce((a, b) => a + b, 0);
-  const subtotal = Object.entries(cart).reduce((sum, [id, qty]) => sum + (meals.find((meal) => meal.id === Number(id))?.price ?? 0) * qty, 0);
+  const subtotal = Object.entries(cart).reduce((sum, [id, qty]) => sum + (mealList.find((meal) => meal.id === Number(id))?.price ?? 0) * qty, 0);
   const handleAuthenticated = (nextUser: DemoUser) => { setUser(nextUser); setAuthMode(null); setAccountOpen(false); setRole("customer"); };
   const signOut = () => { setUser(null); setAccountOpen(false); setRole("customer"); };
   const placeOrder = (details: CheckoutDetails) => {
@@ -494,11 +643,11 @@ export default function App() {
       id: `KK-${Date.now().toString().slice(-6)}`,
       createdAt: new Date().toISOString(),
       items: Object.entries(cart).filter(([, qty]) => qty > 0).map(([id, qty]) => {
-        const meal = meals.find((item) => item.id === Number(id))!;
+        const meal = mealList.find((item) => item.id === Number(id))!;
         return { mealId: meal.id, name: lang === "bn" ? meal.bn : meal.en, qty, price: meal.price };
       }),
       subtotal, fee, total: subtotal + fee, method: details.method, address: details.address, phone: details.phone,
-      payment: details.payment, status: "Confirmed", coordinates: details.coordinates,
+      payment: details.payment, status: "Confirmed", coordinates: details.coordinates, customer: user?.name || "Guest customer",
     };
     setOrders((current) => [order, ...current]);
     setTrackingOrder(order);
@@ -508,12 +657,12 @@ export default function App() {
   const trackOrder = (order: StoredOrder) => { setOrdersOpen(false); setTrackingOrder(order); };
   return <div className="app" data-theme={theme}>
     <Header lang={lang} setLang={setLang} role={role} setRole={setRole} cartCount={cartCount} openCart={() => setCartOpen(true)} theme={theme} setTheme={setTheme} user={user} openAuth={() => setAuthMode("login")} openAccount={() => setAccountOpen(true)} address={address} openLocation={() => setLocationOpen(true)} openOrders={() => setOrdersOpen(true)} />
-    {role === "customer" && <CustomerHome lang={lang} addItem={addItem} openMeal={setMealId} />}
-    {role === "kitchen" && <KitchenDashboard />}
-    {role === "admin" && <AdminDashboard />}
-    {mealId && <MealDetail id={mealId} lang={lang} close={() => setMealId(null)} add={addItem} />}
-    {cartOpen && <CartDrawer cart={cart} update={updateItem} close={() => setCartOpen(false)} checkout={() => { setCartOpen(false); setCheckoutOpen(true); }} />}
-    {checkoutOpen && <Checkout subtotal={subtotal} defaultAddress={address} defaultCoordinates={deliveryCoordinates} close={() => setCheckoutOpen(false)} placeOrder={(details) => { setAddress(details.address || address); setDeliveryCoordinates(details.coordinates); placeOrder(details); }} />}
+    {role === "customer" && <CustomerHome lang={lang} meals={mealList} categories={categories} kitchenAccepting={kitchenAccepting} addItem={addItem} openMeal={setMealId} />}
+    {role === "kitchen" && <KitchenDashboard meals={mealList} setMeals={setMealList} orders={orders} setOrders={setOrders} categories={categories} accepting={kitchenAccepting} setAccepting={setKitchenAccepting} />}
+    {role === "admin" && <AdminDashboard orders={orders} setOrders={setOrders} categories={categories} setCategories={setCategories} meals={mealList} />}
+    {mealId && <MealDetail id={mealId} lang={lang} meals={mealList} kitchenAccepting={kitchenAccepting} close={() => setMealId(null)} add={addItem} />}
+    {cartOpen && <CartDrawer cart={cart} meals={mealList} update={updateItem} accepting={kitchenAccepting} close={() => setCartOpen(false)} checkout={() => { setCartOpen(false); setCheckoutOpen(true); }} />}
+    {checkoutOpen && <Checkout subtotal={subtotal} defaultAddress={address} defaultCoordinates={deliveryCoordinates} accepting={kitchenAccepting} close={() => setCheckoutOpen(false)} placeOrder={(details) => { setAddress(details.address || address); setDeliveryCoordinates(details.coordinates); placeOrder(details); }} />}
     {trackingOrder && <Tracking order={trackingOrder} close={() => setTrackingOrder(null)} />}
     {authMode && <AuthModal initialMode={authMode} close={() => setAuthMode(null)} onAuthenticated={handleAuthenticated} />}
     {accountOpen && user && <AccountModal user={user} close={() => setAccountOpen(false)} signOut={signOut} openOrders={() => { setAccountOpen(false); setOrdersOpen(true); }} />}
