@@ -204,7 +204,21 @@ function Header({ lang, setLang, role, setRole, cartCount, openCart, theme, setT
       <div className="header-actions">
         <button className="location" onClick={openLocation} title="Change delivery location"><Icon name="pin" size={18} /><span><small>{t.location}</small><strong>{address || "Add delivery address"}</strong></span></button>
         <div className="lang"><button className={lang === "bn" ? "active" : ""} onClick={() => setLang("bn")}>বাংলা</button><span>|</span><button className={lang === "en" ? "active" : ""} onClick={() => setLang("en")}>EN</button></div>
-        <button className="icon-button theme-toggle" onClick={() => setTheme(theme === "light" ? "dark" : "light")} title={`Switch to ${theme === "light" ? "dark" : "light"} mode`} aria-label="Toggle color theme"><Icon name={theme === "light" ? "moon" : "sun"} /></button>
+        <button
+          className={`icon-button theme-toggle ${theme === "dark" ? "is-dark" : ""}`}
+          onClick={() => setTheme(theme === "light" ? "dark" : "light")}
+          title={`Switch to ${theme === "light" ? "dark" : "light"} mode`}
+          aria-label={`Switch to ${theme === "light" ? "dark" : "light"} mode`}
+          aria-pressed={theme === "dark"}
+        >
+          <span className="theme-toggle-scene" aria-hidden="true">
+            <span className="theme-toggle-glyph theme-toggle-sun"><Icon name="sun" size={17} /></span>
+            <span className="theme-toggle-glyph theme-toggle-moon"><Icon name="moon" size={17} /></span>
+            <span className="theme-toggle-star star-one" />
+            <span className="theme-toggle-star star-two" />
+            <span className="theme-toggle-star star-three" />
+          </span>
+        </button>
         {role === "customer" && <button className="icon-button cart-button" onClick={openCart} aria-label="Open cart"><Icon name="bag" />{cartCount > 0 && <b>{cartCount}</b>}</button>}
         {role === "customer" && <button className="icon-button orders-shortcut" onClick={openOrders} title="Order history" aria-label="Order history"><Icon name="orders" /></button>}
         <button className="profile-button" onClick={user ? openAccount : openAuth} aria-label={user ? "Open account" : "Sign in or sign up"}><span>{initials}</span><strong className="profile-label">{user ? user.name.split(" ")[0] : "Sign in"}</strong><Icon name="chevron" size={16} /></button>
