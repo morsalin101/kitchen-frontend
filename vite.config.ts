@@ -10,6 +10,7 @@ let siteConfiguration: FigmaSiteConfiguration = {
   language: 'en',
 }
 
+
 try {
   const siteConfigPath = path.resolve(import.meta.dirname, './.figma/make/site.json')
   if (fs.existsSync(siteConfigPath)) {
