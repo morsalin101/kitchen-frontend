@@ -1,0 +1,30 @@
+Khabar Koi role-based frontend update
+
+This bundle contains the complete frontend source project with the role-based Buyer/Seller/Admin design additions. It keeps the existing storefront and prototype dashboards/features.
+
+Safest update:
+1. Stop the Vite dev server only (leave Spring Boot running).
+2. Make a backup copy of your current kitchen-frontend folder.
+3. Extract this ZIP to a temporary location.
+4. Copy the extracted kitchen-frontend source files over your existing kitchen-frontend folder. Do not copy .git or .idea from a bundle (none are included).
+5. In the frontend terminal run: npm install
+6. Start/restart Vite: npm run dev
+7. Keep Spring Boot running on port 8080.
+
+New behavior:
+- Header workspace labels are Buyer, Seller, Admin.
+- The Buyer home page has a “Become a seller” call-to-action.
+- The account/profile modal has “Become a Seller / Create a kitchen” and seller-application summary actions.
+- Creating a kitchen uses the existing POST API, then shows the seller application status page.
+- Seller Dashboard is shown only when the corresponding backend kitchen record is ACTIVE.
+- Admin > Kitchens now contains a separate read-only list of real backend kitchens, alongside the original sample-data management panel.
+- The old customer storefront, checkout, cart, local order history, kitchen dashboard, and admin demo features are retained.
+
+Important prototype limits:
+- Login is still local demo auth.
+- Kitchen create currently uses test ownerId 1.
+- Admin workspace selection is for preview only, not security. Proper backend auth/authorization and an admin approve/reject endpoint remain future work.
+
+Validation performed by the authoring environment:
+- npx tsc --noEmit: passed
+- npm run build: passed
