@@ -10,7 +10,6 @@ let siteConfiguration: FigmaSiteConfiguration = {
   language: 'en',
 }
 
-
 try {
   const siteConfigPath = path.resolve(import.meta.dirname, './.figma/make/site.json')
   if (fs.existsSync(siteConfigPath)) {
@@ -45,6 +44,14 @@ react(),
       },
     },
     server: {
+      // Same-origin proxy: session cookie + CSRF work without any backend CORS change.
+      proxy: {
+        '/api': {
+          target: process.env.API_PROXY_TARGET || 'http://localhost:8080',
+          changeOrigin: true,
+          configure: (proxy: any) => proxy.on('proxyReq', (req: any) => req.removeHeader('origin')),
+        },
+      },
       host: process.env.FIGMA_DEV_SERVER_HOST || '0.0.0.0',
       port: parseInt(process.env.PORT || '8443'),
       strictPort: false,
